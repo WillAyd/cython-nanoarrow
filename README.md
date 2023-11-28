@@ -14,7 +14,9 @@ from comparisons import ComparisonManager
 mgr = ComparisonManager()
 %timeit mgr.unpack()
 %timeit mgr.unpack_no_shift()
+%timeit mgr.unpack_multiply()
 %timeit mgr.pack()
 %timeit mgr.pack_no_shift()
+%timeit mgr.pack_multiply()
 ```
 

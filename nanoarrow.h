@@ -1489,7 +1489,11 @@ static inline void ArrowBitsUnpackInt8(const uint8_t* bits, int64_t start_offset
 
 /// \brief Extract int8 boolean values from a range in a bitmap
 static inline void ArrowBitsUnpackInt8NoShift(const uint8_t* bits, int64_t start_offset,
-                                              int64_t length, int8_t* out);  
+                                              int64_t length, int8_t* out);
+
+/// \brief Extract int8 boolean values from a range in a bitmap
+static inline void ArrowBitsUnpackInt8Multiply(const uint8_t* bits, int64_t start_offset,
+                                               int64_t length, int8_t* out);    
 
 /// \brief Initialize an ArrowBitmap
 ///
@@ -2150,6 +2154,14 @@ static inline void _ArrowBitsUnpackInt8NoShift(const uint8_t word, int8_t* out) 
   out[7] = (word & 0x80) != 0;
 }
 
+static inline void _ArrowBitsUnpackInt8Multiply(const uint8_t word, int8_t* out) {
+  // see https://stackoverflow.com/a/51750902/621736
+  const uint64_t magic = 0x8040201008040201ULL;
+  const uint64_t mask = 0x8080808080808080ULL;
+  const uint64_t tmp = htobe64((magic * word) & mask) >> 7;
+  memcpy(out, &tmp, sizeof(tmp));
+}  
+
 static inline void _ArrowBitmapPackInt8(const int8_t* values, uint8_t* out) {
   *out = (values[0] | values[1] << 1 | values[2] << 2 | values[3] << 3 | values[4] << 4 |
           values[5] << 5 | values[6] << 6 | values[7] << 7);
@@ -2166,7 +2178,12 @@ static inline void _ArrowBitmapPackInt8NoShift(const int8_t* values, uint8_t* ou
           | ((values[7] + 0x7f) & 0x80)
           );
 }
-  
+
+static inline void _ArrowBitmapPackInt8Multiply(const int8_t* values, uint8_t* out) {
+  uint64_t tmp;
+  memcpy(&tmp, values, sizeof(tmp));
+  *out = 0x0102040810204080ULL * tmp >> 56;
+}  
 
 static inline void _ArrowBitmapPackInt32(const int32_t* values, uint8_t* out) {
   *out = (values[0] | values[1] << 1 | values[2] << 2 | values[3] << 3 | values[4] << 4 |
@@ -2245,6 +2262,45 @@ static inline void ArrowBitsUnpackInt8NoShift(const uint8_t* bits, int64_t start
   // middle bytes
   for (int64_t i = bytes_begin + 1; i < bytes_last_valid; i++) {
     _ArrowBitsUnpackInt8NoShift(bits[i], out);
+    out += 8;
+  }
+
+  // last byte
+  const int bits_remaining = i_end % 8 == 0 ? 8 : i_end % 8;
+  for (int i = 0; i < bits_remaining; i++) {
+    *out++ = ArrowBitGet(&bits[bytes_last_valid], i);
+  }
+}
+
+static inline void ArrowBitsUnpackInt8Multiply(const uint8_t* bits, int64_t start_offset,
+                                               int64_t length, int8_t* out) {
+  if (length == 0) {
+    return;
+  }
+
+  const int64_t i_begin = start_offset;
+  const int64_t i_end = start_offset + length;
+  const int64_t i_last_valid = i_end - 1;
+
+  const int64_t bytes_begin = i_begin / 8;
+  const int64_t bytes_last_valid = i_last_valid / 8;
+
+  if (bytes_begin == bytes_last_valid) {
+    for (int i = 0; i < length; i++) {
+      out[i] = ArrowBitGet(&bits[bytes_begin], i + i_begin % 8);
+    }
+
+    return;
+  }
+
+  // first byte
+  for (int i = 0; i < 8 - (i_begin % 8); i++) {
+    *out++ = ArrowBitGet(&bits[bytes_begin], i + i_begin % 8);
+  }
+
+  // middle bytes
+  for (int64_t i = bytes_begin + 1; i < bytes_last_valid; i++) {
+    _ArrowBitsUnpackInt8Multiply(bits[i], out);
     out += 8;
   }
 
@@ -2502,6 +2558,54 @@ static inline void ArrowBitmapAppendInt8UnsafeNoShift(struct ArrowBitmap* bitmap
   bitmap->size_bits += n_values;
   bitmap->buffer.size_bytes = out_cursor - bitmap->buffer.data;
 }
+
+static inline void ArrowBitmapAppendInt8UnsafeMultiply(struct ArrowBitmap* bitmap,
+                                               const int8_t* values, int64_t n_values) {
+  if (n_values == 0) {
+    return;
+  }
+
+  const int8_t* values_cursor = values;
+  int64_t n_remaining = n_values;
+  int64_t out_i_cursor = bitmap->size_bits;
+  uint8_t* out_cursor = bitmap->buffer.data + bitmap->size_bits / 8;
+
+  // First byte
+  if ((out_i_cursor % 8) != 0) {
+    int64_t n_partial_bits = _ArrowRoundUpToMultipleOf8(out_i_cursor) - out_i_cursor;
+    for (int i = 0; i < n_partial_bits; i++) {
+      ArrowBitSetTo(bitmap->buffer.data, out_i_cursor++, values[i]);
+    }
+
+    out_cursor++;
+    values_cursor += n_partial_bits;
+    n_remaining -= n_partial_bits;
+  }
+
+  // Middle bytes
+  int64_t n_full_bytes = n_remaining / 8;
+  for (int64_t i = 0; i < n_full_bytes; i++) {
+    _ArrowBitmapPackInt8Multiply(values_cursor, out_cursor);
+    values_cursor += 8;
+    out_cursor++;
+  }
+
+  // Last byte
+  out_i_cursor += n_full_bytes * 8;
+  n_remaining -= n_full_bytes * 8;
+  if (n_remaining > 0) {
+    // Zero out the last byte
+    *out_cursor = 0x00;
+    for (int i = 0; i < n_remaining; i++) {
+      ArrowBitSetTo(bitmap->buffer.data, out_i_cursor++, values_cursor[i]);
+    }
+    out_cursor++;
+  }
+
+  bitmap->size_bits += n_values;
+  bitmap->buffer.size_bytes = out_cursor - bitmap->buffer.data;
+}
+  
   
 
 static inline void ArrowBitmapAppendInt32Unsafe(struct ArrowBitmap* bitmap,

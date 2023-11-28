@@ -20,8 +20,10 @@ cdef extern from "nanoarrow.h":
     void ArrowBitsSetTo(uint8_t*, int64_t, int64_t, uint8_t)
     void ArrowBitsUnpackInt8(const uint8_t*, int64_t, int64_t, int8_t*)
     void ArrowBitsUnpackInt8NoShift(const uint8_t*, int64_t, int64_t, int8_t*)
+    void ArrowBitsUnpackInt8Multiply(const uint8_t*, int64_t, int64_t, int8_t*)
     void ArrowBitmapAppendInt8Unsafe(ArrowBitmap*, const int8_t*, int64_t)
-    void ArrowBitmapAppendInt8UnsafeNoShift(ArrowBitmap*, const int8_t*, int64_t)    
+    void ArrowBitmapAppendInt8UnsafeNoShift(ArrowBitmap*, const int8_t*, int64_t)
+    void ArrowBitmapAppendInt8UnsafeMultiply(ArrowBitmap*, const int8_t*, int64_t)    
     void ArrowBitmapReset(ArrowBitmap*)
 
 cdef class ComparisonManager:
@@ -54,6 +56,10 @@ cdef class ComparisonManager:
         cdef ComparisonManager self_ = self        
         ArrowBitsUnpackInt8NoShift(self_.bitmap.buffer.data, 0, self_.N, <int8_t*>self_.buf)
 
+    def unpack_multiply(self):
+        cdef ComparisonManager self_ = self        
+        ArrowBitsUnpackInt8Multiply(self_.bitmap.buffer.data, 0, self_.N, <int8_t*>self_.buf)        
+
     def pack(self):
         cdef ComparisonManager self_ = self
         memset(self_.buf, 0, self_.N)
@@ -64,4 +70,10 @@ cdef class ComparisonManager:
         cdef ComparisonManager self_ = self
         memset(self_.buf, 0, self_.N)
         self_.bitmap.size_bits = 0  # hack to avoid append overruning buffer
-        ArrowBitmapAppendInt8UnsafeNoShift(&(self_.bitmap), <const int8_t*>self_.buf, self_.N)        
+        ArrowBitmapAppendInt8UnsafeNoShift(&(self_.bitmap), <const int8_t*>self_.buf, self_.N)
+
+    def pack_multiply(self):
+        cdef ComparisonManager self_ = self
+        memset(self_.buf, 0, self_.N)
+        self_.bitmap.size_bits = 0  # hack to avoid append overruning buffer
+        ArrowBitmapAppendInt8UnsafeMultiply(&(self_.bitmap), <const int8_t*>self_.buf, self_.N)                
